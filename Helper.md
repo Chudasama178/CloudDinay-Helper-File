@@ -1,6 +1,6 @@
  # Cloudianry use to manage images
  
- This lab demonstrates how to use Cloudinary for image storage
+ This demonstrates how to use Cloudinary for image store and use in project
 
  ---
  ### 1. Install Required Packeges
@@ -11,7 +11,23 @@
 dotnet add package CloudinaryDotNet
 ```
 
-### 2. Update `Program.cs`
+### 2.Update `appsettings.json`
+
+Create a configuration section in your appsettings.json file for your Cloudinary credentials: 
+
+```csharp
+{
+  "CloudinarySettings": {
+    "CloudName": "your-cloud-name",
+    "ApiKey": "your-api-key",
+    "ApiSecret": "your-api-secret"
+  }
+}
+
+```
+
+
+### 3. Update `Program.cs`
 
 #### a. Register the settings and the Cloudinary service in the  Program.cs file:
 
@@ -39,36 +55,23 @@ public class CloudinarySettings
 }
 ```
 
-### 3.Update `appsettings.json`
-
-Create a configuration section in your appsettings.json file for your Cloudinary credentials: 
-
-```csharp
-{
-  "CloudinarySettings": {
-    "CloudName": "your-cloud-name",
-    "ApiKey": "your-api-key",
-    "ApiSecret": "your-api-secret"
-  }
-}
-
-```
-
 ### 4.Defines `Models`
 
 Create a `ProductModel` class into Models folder :
 
 ```csharp
- public class ProductModel
- {
-     public? int ProductID { get; set; } 
-     public string Name { get; set; }
-     public IFormFile ImageFile { get; set; }
- }
-```
-Create a `ApiResponse` class into Models folder :
-
-```csharp
+public class ProductModel
+{
+    public int ProductID { get; set; }
+    public string Name { get; set; }
+    public string ImageUrl { get; set; }
+}
+public class ProductInsertUpdateModel
+{
+    public int? ProductID { get; set; }
+    public string Name { get; set; }
+    public IFormFile ImageFile { get; set; }
+}
 public class ApiResponse
 {
     public bool Success { get; set; }
@@ -76,8 +79,7 @@ public class ApiResponse
 }
 ```
 
-
-### 5. Implement Cloudinary `SelectByPk`,`Insert`,`Delete` opration in `ProdductRepository`
+### 5. Implement Cloudinary `SelectByPk`,`Insert`,`Update`,`Delete` opration in `ProdductRepository`
 
 Create `ProductRepository` class into data folder
 
@@ -85,18 +87,20 @@ Create `ProductRepository` class into data folder
 public interface IProductRepository
 {
     Task<ProductModel> GetProductByIdAsync(int productId);
-    Task<ApiResponse> AddProductAsync(ProductModel product);
+    Task<ApiResponse> AddProductAsync(ProductInsertUpdateModel product);
+
+    Task<ApiResponse> UpdateProductAsync(ProductInsertUpdateModel product, int ProductID);
     Task<bool> DeleteProductAsync(int productId);
     Task<string> UploadImageAsync(IFormFile file);
 }
 
-public class ProductRepository : IProductRepository
+public class ProductRepo : IProductRepository
 {
     #region  Configuration
     private readonly string _connectionStr;
     private readonly Cloudinary _cloudinary;
 
-    public ProductRepository(IConfiguration configuration)
+    public ProductRepo(IConfiguration configuration)
     {
         _connectionStr = configuration.GetConnectionString("ConnectionString");
 
@@ -139,14 +143,14 @@ public class ProductRepository : IProductRepository
     }
     #endregion
 
-
     #region Insert
-    public async Task<ApiResponse> AddProductAsync(ProductModel product){
+    public async Task<ApiResponse> AddProductAsync(ProductInsertUpdateModel product)
+    {
         string imageUrl = null;
 
         if (product.ImageFile != null)
         {
-            imageUrl = await UploadImageAsync(product.ImageFile);  // Upload image to Cloudinary
+            imageUrl = await UploadImageAsync(product.ImageFile); 
         }
 
         using (SqlConnection conn = new SqlConnection(_connectionStr))
@@ -161,8 +165,8 @@ public class ProductRepository : IProductRepository
             cmd.Parameters.AddWithValue("@ImageUrl", imageUrl ?? (object)DBNull.Value);
             try
             {
-                int result = cmd.ExecuteNonQuery(); 
-                if (result > 0) 
+                int result = cmd.ExecuteNonQuery();
+                if (result > 0)
                 {
                     return new ApiResponse
                     {
@@ -190,18 +194,73 @@ public class ProductRepository : IProductRepository
     }
     #endregion
 
+    #region Update
+    public async Task<ApiResponse> UpdateProductAsync(ProductInsertUpdateModel product, int ProductID)
+    {
+        string imageUrl = null;
+
+        if (product.ImageFile != null)
+        {
+            imageUrl = await UploadImageAsync(product.ImageFile); 
+        }
+
+        using (SqlConnection conn = new SqlConnection(_connectionStr))
+        {
+            SqlCommand cmd = new SqlCommand("Pr_Product_Update", conn)
+            {
+                CommandType = CommandType.StoredProcedure
+            };
+            conn.Open();
+
+            cmd.Parameters.AddWithValue("@ProductID", ProductID);
+            cmd.Parameters.AddWithValue("@Name", product.Name);
+            cmd.Parameters.AddWithValue("@ImageUrl", imageUrl ?? (object)DBNull.Value);
+
+            try
+            {
+                int result = cmd.ExecuteNonQuery(); 
+                Console.WriteLine($"Rows affected: {result}");
+                if (result >= 0)  
+                {
+                    return new ApiResponse
+                    {
+                        Success = true,
+                        Message = "Product updated successfully."
+                    };
+                }
+
+                return new ApiResponse
+                {
+                    Success = false,
+                    Message = "Failed to update product."
+                };
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error during product update: {ex.Message}");
+                return new ApiResponse
+                {
+                    Success = false,
+                    Message = "Failed to update product."
+                };
+            }
+        }
+    }
+
+    #endregion
+
     #region Delete
     public async Task<bool> DeleteProductAsync(int productId)
     {
         var product = await GetProductByIdAsync(productId);
         if (product == null)
         {
-            return false; 
+            return false;
         }
 
         if (!string.IsNullOrEmpty(product.ImageUrl))
         {
-            var imagePublicId = product.ImageUrl.Split('/').Last().Split('.').First(); 
+            var imagePublicId = product.ImageUrl.Split('/').Last().Split('.').First();
             var deletionParams = new DeletionParams(imagePublicId);
             var deletionResult = await _cloudinary.DestroyAsync(deletionParams);
 
@@ -232,19 +291,19 @@ public class ProductRepository : IProductRepository
     {
         if (file == null)
         {
-             throw new ArgumentNullException(nameof(file), "File cannot be null.");
+            throw new ArgumentNullException(nameof(file), "File cannot be null.");
         }
 
         var uploadParams = new ImageUploadParams()
         {
-             File = new FileDescription(file.FileName, file.OpenReadStream())
+            File = new FileDescription(file.FileName, file.OpenReadStream())
         };
 
         var uploadResult = await _cloudinary.UploadAsync(uploadParams);
 
         if (uploadResult.StatusCode != System.Net.HttpStatusCode.OK)
         {
-             throw new Exception("Failed to upload image to Cloudinary.");
+            throw new Exception("Failed to upload image to Cloudinary.");
         }
 
         return uploadResult?.SecureUrl?.ToString();
@@ -253,70 +312,87 @@ public class ProductRepository : IProductRepository
 }
 ```
 
-### 6. Implement Cloudinary `SelectByPk`,`Insert`,`Delete` opration in `ProductController`
+### 6. Implement Cloudinary `SelectByPk`,`Insert`,`Update`,`Delete` opration in `ProductController`
 
 ```csharp
     [Route("api/[controller]")]
-    [ApiController]
-    public class ProductController : ControllerBase
+[ApiController]
+public class ProductController : ControllerBase
+{
+    #region Fields & Constructor
+    private readonly IProductRepository _productRepository;
+
+    public ProductController(IProductRepository productRepository)
     {
-        #region Fields & Constructor
-        private readonly IProductRepository _productRepository;
+        _productRepository = productRepository;
+    }
+    #endregion
 
-        public ProductController(IProductRepository productRepository)
+    #region SelectByPk-Product
+    [HttpGet("SelectByPk/{productId}")]
+    public async Task<IActionResult> GetProductById(int productId)
+    {
+        var product = await _productRepository.GetProductByIdAsync(productId);
+        if (product == null)
+            return NotFound();
+
+        return Ok(product);
+    }
+    #endregion
+
+    #region Insert-Product
+    [HttpPost("Insert")]
+    public async Task<IActionResult> AddProduct([FromForm] ProductInsertUpdateModel product)
+    {
+        if (!ModelState.IsValid)
+            return BadRequest(ModelState);
+
+        var response = await _productRepository.AddProductAsync(product);
+
+        if (!response.Success)
         {
-            _productRepository = productRepository;
+            return BadRequest(response);
         }
-        #endregion
+        return Ok(response);
+    }
+    #endregion
 
-        #region SelectByPk-Product
-        [HttpGet("SelectByPk/{productId}")]
-        public async Task<IActionResult> GetProductById(int productId)
+    #region Update
+    [HttpPut("Update/{ProductID}")]
+    public async Task<IActionResult> UpdateProduct([FromForm] ProductInsertUpdateModel product, int ProductID)
+    {
+        if (!ModelState.IsValid)
+            return BadRequest(ModelState);
+
+        var response = await _productRepository.UpdateProductAsync(product, ProductID);
+        if (!response.Success)
         {
-            var product = await _productRepository.GetProductByIdAsync(productId);
-            if (product == null)
+            return BadRequest(response);
+        }
+
+        return Ok(response);
+    }
+    #endregion
+
+    #region Delete-Product
+    [HttpDelete("Delete/{productId}")]
+    public async Task<IActionResult> DeleteProduct(int productId)
+    {
+        try
+        {
+            var deleted = await _productRepository.DeleteProductAsync(productId);
+            if (!deleted)
                 return NotFound();
 
-            return Ok(product);
+            return Ok(new { success = true, message = "Product deleted successfully." });
         }
-        #endregion
-
-        #region Insert-Product
-        [HttpPost("Insert")]
-        public async Task<IActionResult> AddProduct([FromForm] ProductInsertUpdateModel product)
+        catch (Exception ex)
         {
-            if (!ModelState.IsValid)
-                return BadRequest(ModelState);
-
-            var response = await _productRepository.AddProductAsync(product);
-
-            if (!response.Success)
-            {
-                return BadRequest(response); 
-            }
-            return Ok(response);  
+            return StatusCode(500, $"Internal server error: {ex.Message}");
         }
-        #endregion
-
-        #region Delete-Product
-        [HttpDelete("Delete/{productId}")]
-        public async Task<IActionResult> DeleteProduct(int productId)
-        {
-            try
-            {
-                var deleted = await _productRepository.DeleteProductAsync(productId);
-                if (!deleted)
-                    return NotFound();
-
-                return Ok(new { success = true, message = "Product deleted successfully." });
-            }
-            catch (Exception ex)
-            {
-                return StatusCode(500, $"Internal server error: {ex.Message}");
-            }
-        }
-        #endregion
     }
+    #endregion
+}
 ```
 
 
